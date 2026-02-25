@@ -1,55 +1,86 @@
-name: "Roam Research backup"
+name: "Roam Research backup (1password)"
 
 on:
-  push:
-    branches:
-      - main
-  schedule:
-      # Here you can change how often your backup runs. See https://crontab.guru/examples.html
-      - cron: "30 13,21 * * *"
+  # Template repo should NOT run on every push.
+  # Users can trigger it manually after configuring secrets.
+  workflow_dispatch:
+
+  # Optional: enable schedule after you configure everything in your own repo
+  # schedule:
+  #   - cron: "30 13,21 * * *"
+
+concurrency:
+  group: roam-backup
+  cancel-in-progress: true
 
 jobs:
   backup:
     runs-on: ubuntu-latest
-    name: Backup
     timeout-minutes: 120
+
     steps:
-      - uses: actions/checkout@v4
+      # 1) Load secrets from 1Password (recommended)
+      # Users must create a 1Password Service Account and add OP_SERVICE_ACCOUNT_TOKEN to GitHub Secrets.
+      - name: Load secrets from 1Password
+        uses: 1password/load-secrets-action@v2
         with:
-          repository: ${{ secrets.BACKUP_REPO }}
-          token: ${{ secrets.ACCESS_TOKEN }}
-      
+          export-env: true
+        env:
+          OP_SERVICE_ACCOUNT_TOKEN: ${{ secrets.OP_SERVICE_ACCOUNT_TOKEN }}
+
+          # Change these to match your own Vault/Item/field names:
+          ROAM_EMAIL: op://RoamBackup/RoamAccount/roam_email
+          ROAM_PASSWORD: op://RoamBackup/RoamAccount/roam_password
+          ROAM_GRAPH: op://RoamBackup/RoamAccount/roam_graph
+
+          # GitHub token for pushing to the backup repo (fine-grained PAT recommended)
+          ACCESS_TOKEN: op://RoamBackup/RoamAccount/github_pat
+
+          # Target backup repository, e.g. "your-username/roam-backup"
+          BACKUP_REPO: op://RoamBackup/RoamAccount/backup_repo
+
+      # 2) Checkout the backup repo
+      - name: Checkout backup repo
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.BACKUP_REPO }}
+          token: ${{ env.ACCESS_TOKEN }}
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: "20"
 
-      - name: Cache Node.js modules
-        uses: actions/cache@v3.4.3
+      - name: Cache npm
+        uses: actions/cache@v4
         with:
           path: ~/.npm
-          key: ${{ runner.OS }}-node-${{ hashFiles('**/package-lock.json') }}
+          key: ${{ runner.os }}-node-${{ hashFiles('**/package-lock.json') }}
           restore-keys: |
-            ${{ runner.OS }}-node-
-      
-      - name: Run Backup
+            ${{ runner.os }}-node-
+
+      # 3) Run roam2github backup
+      - name: Run backup (roam2github)
+        shell: bash
         run: |
+          set -euo pipefail
           cd /tmp
           git clone -q https://github.com/everruler12/roam2github.git roam2github
-          cd $_
-          npm i
+          cd roam2github
+          npm ci
           npm run backup -s
         env:
-          ROAM_EMAIL: ${{ secrets.ROAM_EMAIL }}
-          ROAM_PASSWORD: ${{ secrets.ROAM_PASSWORD }}
-          ROAM_GRAPH: ${{ secrets.ROAM_GRAPH }}
-          BACKUP_EDN: false
-          BACKUP_JSON: false
-          BACKUP_MARKDOWN: true
-          BACKUP_FLAT_MARKDOWN: false
-          BACKUP_MSGPACK: false
-    
-      - name: Commit Changes
+          ROAM_EMAIL: ${{ env.ROAM_EMAIL }}
+          ROAM_PASSWORD: ${{ env.ROAM_PASSWORD }}
+          ROAM_GRAPH: ${{ env.ROAM_GRAPH }}
+          BACKUP_EDN: "false"
+          BACKUP_JSON: "false"
+          BACKUP_MARKDOWN: "true"
+          BACKUP_FLAT_MARKDOWN: "false"
+          BACKUP_MSGPACK: "false"
+
+      # 4) Commit changes back to the backup repo
+      - name: Commit changes
         uses: everruler12/git-auto-commit-action@latest
         with:
-          commit_message: Automatic backup
+          commit_message: "Automatic backup"
